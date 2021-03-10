@@ -1622,7 +1622,7 @@ class LifeCycleTest(tu.TestResultCollector):
             self.assertTrue(False, "unexpected error {}".format(ex))
         self._infer_success_identity(model_base, (2,), np.int32, model_shape)
 
-    def test_model_availability_on_reload_2(self):
+    def test_model_availability_on_reload_3(self):
         model_name = "identity_zero_1_int32"
         model_base = "identity"
         model_shape = (16,)
@@ -1641,12 +1641,11 @@ class LifeCycleTest(tu.TestResultCollector):
         self._infer_success_identity(model_base, (1,), np.int32, model_shape)
 
         # Overwrite config.pbtxt to load v2 only
-        shutil.copyfile("config.pbtxt.v2",
+        shutil.copyfile("config.pbtxt.new",
                         "models/" + model_name + "/config.pbtxt")
 
-        # Reload models, v1 should still be available until v2 is loaded
-        # The load is requested in other thread as it is blocking API,
-        # and the v1 availibility should be tested during the reload
+        # Reload models, v1 will be reloaded but it should  be available
+        # during the whole reload
         thread = threading.Thread(target=self._async_load,
                                   args=(model_name, use_grpc))
         thread.start()
@@ -1669,16 +1668,15 @@ class LifeCycleTest(tu.TestResultCollector):
         self._infer_success_identity(model_base, (1,), np.int32, model_shape)
 
         thread.join()
-        # Make sure version 2 of the model is available while version 1 is not
+        # Make sure version 1 of the model is still available after reload
         try:
             triton_client = self._get_client(use_grpc)
             self.assertTrue(triton_client.is_server_live())
             self.assertTrue(triton_client.is_server_ready())
-            self.assertFalse(triton_client.is_model_ready(model_name, "1"))
-            self.assertTrue(triton_client.is_model_ready(model_name, "2"))
+            self.assertTrue(triton_client.is_model_ready(model_name, "1"))
         except Exception as ex:
             self.assertTrue(False, "unexpected error {}".format(ex))
-        self._infer_success_identity(model_base, (2,), np.int32, model_shape)
+        self._infer_success_identity(model_base, (1,), np.int32, model_shape)
 
     def test_model_reload_fail(self):
         model_name = "identity_zero_1_int32"
