@@ -64,7 +64,7 @@ from distutils.dir_util import copy_tree
 # incorrectly load the other version of the openvino libraries.
 #
 TRITON_VERSION_MAP = {
-    '2.8.0dev': ('21.03dev', '21.02', '1.6.0', '2021.1.110', '2021.1.110')
+    '2.9.0dev': ('21.04dev', '21.02', '1.6.0', '2021.1.110', '2021.1.110')
 }
 
 EXAMPLE_BACKENDS = ['identity', 'square', 'repeat']
@@ -646,6 +646,7 @@ COPY --chown=1000:1000 LICENSE .
 COPY --chown=1000:1000 TRITON_VERSION .
 COPY --chown=1000:1000 --from=tritonserver_build /tmp/tritonbuild/install/bin/tritonserver bin/
 COPY --chown=1000:1000 --from=tritonserver_build /tmp/tritonbuild/install/lib/libtritonserver.so lib/
+COPY --chown=1000:1000 --from=tritonserver_build /tmp/tritonbuild/install/include/triton/core include/triton/core
 '''
 
     for noncore in NONCORE_BACKENDS:

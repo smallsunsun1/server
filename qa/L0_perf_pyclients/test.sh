@@ -25,6 +25,7 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+
 REPO_VERSION=${NVIDIA_TRITON_SERVER_VERSION}
 if [ "$#" -ge 1 ]; then
     REPO_VERSION=$1
@@ -35,68 +36,73 @@ if [ -z "$REPO_VERSION" ]; then
     exit 1
 fi
 
-# Must run on a single device or else the TRITONSERVER_DELAY_SCHEDULER
-# can fail when the requests are distributed to multiple devices.
-export CUDA_VISIBLE_DEVICES=0
+REPORTER=../common/reporter.py
+CLIENT_LOG="./simple_perf_client.log"
+SIMPLE_PERF_CLIENT=simple_perf_client.py
 
-LEAKCHECK=/usr/bin/valgrind
-LEAKCHECK_ARGS_BASE="--leak-check=full --show-leak-kinds=definite --max-threads=3000"
-SERVER_TIMEOUT=3600
-rm -f *.log
-
-MEMORY_GROWTH_TEST=../clients/memory_leak_test
-
-DATADIR=`pwd`/models
 SERVER=/opt/tritonserver/bin/tritonserver
-SERVER_ARGS="--model-repository=$DATADIR"
+SERVER_ARGS="--model-repository=`pwd`/custom_models"
 source ../common/util.sh
 
-mkdir -p $DATADIR/custom_identity_int32/1
-cp libidentity.so $DATADIR/custom_identity_int32/1/.
+# Select the single GPU that will be available to the inference
+# server.
+export CUDA_VISIBLE_DEVICES=0
+PROTOCOLS="grpc http"
+
+rm -f *.log *.csv *.tjson *.json
 
 RET=0
 
-run_server
-if [ "$SERVER_PID" == "0" ]; then
-    echo -e "\n***\n*** Failed to start $SERVER\n***"
-    cat $SERVER_LOG
-    exit 1
-fi
+MODEL_NAME="custom_zero_1_int32"
 
-# Run test for both HTTP and GRPC, re-using and not re-using client object. 
-# 1000 inferences in each case.
-EXTRA_ARGS="-r 1000"
-for PROTOCOL in http grpc; do
-    for REUSE in reuse no_reuse; do
-        LEAKCHECK_LOG="./valgrind.${PROTOCOL}.${REUSE}.c++.log"
-        CLIENT_LOG="./client.${PROTOCOL}.${REUSE}.c++.log"
-        LEAKCHECK_ARGS="$LEAKCHECK_ARGS_BASE --log-file=$LEAKCHECK_LOG"
-        if [ "$REUSE" == "reuse" ]; then
-            EXTRA_CLIENT_ARGS="${EXTRA_ARGS} -i ${PROTOCOL} -R"
-        else
-            EXTRA_CLIENT_ARGS="${EXTRA_ARGS} -i ${PROTOCOL}"
+for PROTOCOL in $PROTOCOLS; do
+    run_server
+    if [ "$SERVER_PID" == "0" ]; then
+        echo -e "\n***\n*** Failed to start $SERVER\n***"
+        cat $SERVER_LOG
+        exit 1
+    fi
+
+
+    NAME=${MODEL_NAME}_${PROTOCOL}
+    EXTRA_ARGS="" && [[ "${PROTOCOL}" == "grpc" ]] && EXTRA_ARGS="-i grpc -u localhost:8001"
+    python $SIMPLE_PERF_CLIENT -m $MODEL_NAME --shape 100000 --csv ${NAME}.csv ${EXTRA_ARGS}>> ${NAME}.log 2>&1
+    if (( $? != 0 )); then
+        RET=1
+    fi
+
+    echo -e "[{\"s_benchmark_kind\":\"benchmark_perf\"," >> ${NAME}.tjson
+    echo -e "\"s_benchmark_name\":\"python_client\"," >> ${NAME}.tjson
+    echo -e "\"s_server\":\"triton\"," >> ${NAME}.tjson
+    echo -e "\"s_protocol\":\"${PROTOCOL}\"," >> ${NAME}.tjson
+    echo -e "\"s_framework\":\"custom\"," >> ${NAME}.tjson
+    echo -e "\"s_model\":\"${MODEL_NAME}\"," >> ${NAME}.tjson
+    echo -e "\"l_concurrency\":1," >> ${NAME}.tjson
+    echo -e "\"l_batch_size\":1," >> ${NAME}.tjson
+    echo -e "\"l_instance_count\":1}]" >> ${NAME}.tjson
+
+
+    if [ -f $REPORTER ]; then
+        set +e
+
+        URL_FLAG=
+        if [ ! -z ${BENCHMARK_REPORTER_URL} ]; then
+            URL_FLAG="-u ${BENCHMARK_REPORTER_URL}"
         fi
 
-        $LEAKCHECK $LEAKCHECK_ARGS $MEMORY_GROWTH_TEST $EXTRA_CLIENT_ARGS >> ${CLIENT_LOG} 2>&1
-        if [ $? -ne 0 ]; then
-            cat ${CLIENT_LOG}
+        python $REPORTER -v -o ${NAME}.json --csv ${NAME}.csv ${URL_FLAG} ${NAME}.tjson
+        if (( $? != 0 )); then
             RET=1
-            echo -e "\n***\n*** Test FAILED\n***"
-        else
-            python3 ../common/check_valgrind_log.py -f $LEAKCHECK_LOG
-            if [ $? -ne 0 ]; then
-            echo -e "\n***\n*** Memory leak detected\n***"
-            RET=1
-            fi
         fi
-    done
+
+        set -e
+    fi
+
+    kill $SERVER_PID
+    wait $SERVER_PID
 done
 
-# Stop Server
-kill $SERVER_PID
-wait $SERVER_PID
-
-if [ $RET -eq 0 ]; then
+if (( $RET == 0 )); then
     echo -e "\n***\n*** Test Passed\n***"
 else
     echo -e "\n***\n*** Test FAILED\n***"
